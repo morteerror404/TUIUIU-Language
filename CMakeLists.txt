@@ -1,0 +1,7 @@
+cmake_minimum_required(VERSION 3.13)
+include(pico_sdk_import.cmake)
+project(TuiuiuProject C CXX ASM)
+pico_sdk_init()
+add_executable(firmware_tui temp_output.cpp)
+target_link_libraries(firmware_tui pico_stdlib hardware_flash hardware_watchdog)
+pico_add_extra_outputs(firmware_tui)

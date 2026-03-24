@@ -1,0 +1,2 @@
+@LED_RGB: 16
+@PANIC_PIN: 0

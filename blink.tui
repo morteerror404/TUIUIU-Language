@@ -1,1 +1,10 @@
-piscar(LED_RGB)
+import waveshare
+
+.hardware[
+    pino_led = @LED_RGB
+]
+
+repetir {
+    piscar(pino_led)
+    esperar(500)
+}
