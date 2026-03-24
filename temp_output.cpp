@@ -4,11 +4,8 @@
 
 int main() {
 	stdio_init_all();
-		gpio_init(16);
-        gpio_set_dir(16, GPIO_OUT);
-        gpio_put(16, 1);
-    };
-		sleep_500(500);
-    };
+	while(true) {
+		sleep_ms(500);
+	}
 	return 0;
 }
