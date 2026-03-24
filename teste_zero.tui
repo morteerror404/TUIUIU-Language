@@ -1,0 +1,12 @@
+import "waveshare_rp2040_zero"
+
+.hardware[
+    meu_led = @RGB_DATA
+]
+
+repetir {
+    ligar meu_led
+    esperar(500)
+    desligar meu_led
+    esperar(500)
+}

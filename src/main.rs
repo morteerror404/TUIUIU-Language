@@ -67,20 +67,18 @@ impl TuiCompiler {
     println!("Ambiente limpo.");
 }
 
-    fn flash_dispositivo(&self, letra: &str) {
+    fn flash_dispositivo(&self, drive: &str) {
+    let drive_limpo = drive.trim_end_matches(':').to_uppercase();
     let origem = "build/firmware_tui.uf2";
-    let destino = format!("{}:\\firmware_tui.uf2", letra.to_uppercase());
+    let destino = format!("{}:/firmware.uf2", drive_limpo);
 
-    if Path::new(origem).exists() {
-        println!("Arquivo UF2 localizado. Iniciando transferencia para {}:...", letra);
-        if fs::copy(origem, &destino).is_ok() {
-            println!("Flash concluido com sucesso!");
-        } else {
-            eprintln!("Erro: Falha ao copiar. Verifique se o Pico esta no modo BOOTSEL.");
+    println!("Copiando para a unidade {}:...", drive_limpo);
+
+    match fs::copy(origem, &destino) {
+        Ok(_) => println!("Flash concluído com sucesso! O Pico deve reiniciar agora."),
+        Err(e) => {
+            eprintln!("Erro ao copiar para {}: {}. O Pico esta em modo BOOTSEL?", destino, e);
         }
-    } else {
-        // Esta mensagem confirmara se o Ninja falhou em gerar o arquivo
-        eprintln!("Erro Critico: O arquivo '{}' nao foi gerado pelo compilador.", origem);
     }
 }
 
@@ -184,48 +182,46 @@ impl TuiCompiler {
 
     fn compilar_para_uf2(&self, drive_letra: Option<String>) {
     let build_dir = "build";
-    let cmake_file = "CMakeLists.txt";
     let pico_import_file = "pico_sdk_import.cmake";
     let ninja_path = "C:/Program Files/CMake/bin/ninja.exe";
 
-    // 1. Localizar o SDK (Prioridade para caminhos físicos)
     let mut sdk_path = String::new();
-    let locais = ["C:\\pico-sdk", "D:\\pico-sdk"];
-    for l in locais {
-        if Path::new(l).join("pico_sdk_version.cmake").exists() { 
-            sdk_path = l.to_string(); 
-            break; 
+    let caminhos_possiveis = [
+        "C:/Program Files/Raspberry Pi/Pico SDK v1.5.1/pico-sdk",
+        "C:/Program Files/Raspberry Pi/Pico SDK v1.5.1",
+        "C:/pico-sdk",
+        "D:/pico-sdk",
+    ];
+
+    for caminho in caminhos_possiveis {
+        if Path::new(caminho).join("pico_sdk_version.cmake").exists() {
+            sdk_path = caminho.to_string();
+            break;
         }
     }
-    
-    if sdk_path.is_empty() { sdk_path = std::env::var("PICO_SDK_PATH").unwrap_or_default(); }
 
-    // 2. Gerar CMakeLists.txt com ordem estrita para garantir o UF2
-    let cmake_content = format!(
-    "cmake_minimum_required(VERSION 3.13)\n\
-     set(PICO_NO_PICOTOOL 1)\n\
-     include({})\n\
-     project(TuiuiuProject C CXX ASM)\n\
-     pico_sdk_init()\n\
-     add_executable(firmware_tui temp_output.cpp)\n\
-     # Mantenha o extra_outputs logo apos o executable
-     pico_add_extra_outputs(firmware_tui)\n\
-     target_link_libraries(firmware_tui pico_stdlib hardware_flash hardware_watchdog)",
-    pico_import_file
-);
-    fs::write(cmake_file, cmake_content).ok();
-
-    // 3. Limpeza de cache para evitar conflitos de gerador
-    let cache_file = format!("{}/CMakeCache.txt", build_dir);
-    if Path::new(&cache_file).exists() {
-        let _ = fs::remove_file(&cache_file);
+    if sdk_path.is_empty() {
+        eprintln!("Erro: Não foi possível encontrar o Pico SDK.");
+        return;
     }
+
+    let cmake_content = format!(
+        "cmake_minimum_required(VERSION 3.13)\n\
+         set(PICO_NO_PICOTOOL 1)\n\
+         include({})\n\
+         project(TuiuiuProject C CXX ASM)\n\
+         pico_sdk_init()\n\
+         add_executable(firmware_tui temp_output.cpp)\n\
+         pico_add_extra_outputs(firmware_tui)\n\
+         target_link_libraries(firmware_tui pico_stdlib hardware_flash hardware_watchdog)\n",
+        pico_import_file
+    );
+    fs::write("CMakeLists.txt", cmake_content).ok();
 
     if !Path::new(build_dir).exists() { fs::create_dir(build_dir).ok(); }
 
-    // 4. Configuração e Build
-    println!("Configurando CMake via Ninja...");
-    let cmake_status = Command::new("cmake")
+    println!("Configurando CMake...");
+    let _ = Command::new("cmake")
         .arg("-S").arg(".")
         .arg("-B").arg(build_dir)
         .arg("-G").arg("Ninja")
@@ -233,20 +229,40 @@ impl TuiCompiler {
         .arg(format!("-DPICO_SDK_PATH={}", sdk_path.replace("\\", "/")))
         .status();
 
-    if let Ok(status) = cmake_status {
-        if status.success() {
-            println!("Iniciando compilacao...");
-            let build_status = Command::new("cmake").arg("--build").arg(build_dir).status();
+    println!("Iniciando compilação...");
+    let _ = Command::new("cmake").arg("--build").arg(build_dir).status();
 
-            if let Ok(b_status) = build_status {
-                if b_status.success() {
-                    println!("Sucesso: firmware_tui.uf2 gerado.");
-                    if let Some(letra) = drive_letra {
-                        self.flash_dispositivo(&letra);
-                    }
+    let uf2_path = format!("{}/firmware_tui.uf2", build_dir);
+    let elf_path = format!("{}/firmware_tui.elf", build_dir);
+
+    // Conversão manual se necessário
+    if !Path::new(&uf2_path).exists() && Path::new(&elf_path).exists() {
+        let _ = Command::new(".\\elf2uf2.exe").arg(&elf_path).arg(&uf2_path).status();
+    }
+
+    if Path::new(&uf2_path).exists() {
+        println!("Sucesso: firmware_tui.uf2 gerado.");
+
+        if let Some(letra) = drive_letra {
+            let letra_limpa = letra.trim_end_matches(':').to_uppercase(); // Remove : extra
+            println!("\n--> Deseja enviar para a unidade {}: agora? (s/n)", letra_limpa);
+            
+            let mut input = String::new();
+            std::io::stdin().read_line(&mut input).ok();
+
+            if input.trim().to_lowercase() == "s" {
+                self.flash_dispositivo(&letra_limpa);
+            } else {
+                // SALVAR NA RAIZ SE DISSER "N"
+                let destino_raiz = "firmware_tui.uf2";
+                match fs::copy(&uf2_path, destino_raiz) {
+                    Ok(_) => println!("Arquivo salvo na raiz: {}", destino_raiz),
+                    Err(e) => eprintln!("Erro ao salvar na raiz: {}", e),
                 }
             }
         }
+    } else {
+        eprintln!("Erro Crítico: UF2 não encontrado.");
     }
 }
 
@@ -263,75 +279,110 @@ impl TuiCompiler {
     }
 
     fn transpilador(&mut self, arquivo_tui: &str, _force_hardened: bool, drive: Option<String>) {
-    let conteudo = fs::read_to_string(arquivo_tui).unwrap_or_else(|_| {
-        eprintln!("Erro: Nao foi possivel ler o arquivo {}", arquivo_tui);
-        String::new()
-    });
-    
-    // Identificacao da placa para carregar mapeamentos
-    let mut placa_nome = String::new();
-    for linha in conteudo.lines() {
-        if linha.trim().starts_with("import ") {
-            placa_nome = linha.split_whitespace().last().unwrap_or("").replace("\"", "");
-        }
-    }
+        let conteudo = fs::read_to_string(arquivo_tui).unwrap_or_else(|_| {
+            eprintln!("Erro: Nao foi possivel ler o arquivo {}", arquivo_tui);
+            String::new()
+        });
+        
+        if conteudo.is_empty() { return; }
 
-    if placa_nome.is_empty() { 
-        eprintln!("Erro: Nenhuma placa importada (ex: import \"pico\")");
-        return; 
-    }
-
-    let _ = self.carregar_mapeamento_fabrica(&placa_nome);
-    self.carregar_bibliotecas();
-    self.processar_bloco_hardware(&conteudo);
-
-    let mut cpp_output = String::new();
-    cpp_output.push_str("#include \"pico/stdlib.h\"\n#include \"hardware/flash.h\"\n#include \"hardware/watchdog.h\"\n\n");
-    cpp_output.push_str("int main() {\n\tstdio_init_all();\n");
-
-    for linha in conteudo.lines() {
-        let l = linha.trim();
-        if l.is_empty() || l.starts_with('.') || l.starts_with('@') || l.starts_with("import") || l.starts_with("//") {
-            continue;
+        // 1. Identificação da placa e carregamento de mapeamentos
+        let mut placa_nome = String::new();
+        for linha in conteudo.lines() {
+            if linha.trim().starts_with("import ") {
+                placa_nome = linha.split_whitespace().last().unwrap_or("").replace("\"", "");
+            }
         }
 
-        if l.contains("repetir {") {
-            cpp_output.push_str("\twhile(true) {\n");
-        } else if l == "}" {
-            cpp_output.push_str("\t}\n"); 
-        } else {
-            for (func_tui, snip_c) in &self.biblioteca {
-                if l.starts_with(func_tui) {
-                    let mut comando_final = snip_c.clone();
-                    
-                    // Substituicao segura: busca por "(ms)" para nao quebrar "sleep_ms"
-                    if let (Some(start), Some(end)) = (l.find('('), l.find(')')) {
-                        let arg_valor = &l[start + 1..end];
-                        comando_final = comando_final.replace("(ms)", &format!("({})", arg_valor));
-                    }
-                    
-                    // Substituicao de pino baseada no hardware local
-                    for (alias, pino_num) in &self.hardware_local {
-                        if l.contains(alias) {
-                            comando_final = comando_final.replace("pino", &pino_num.to_string());
+        if placa_nome.is_empty() { 
+            eprintln!("Erro: Nenhuma placa importada (ex: import \"waveshare_rp2040_zero\")");
+            return; 
+        }
+
+        // Carrega o .tui.m e as bibliotecas
+        let _ = self.carregar_mapeamento_fabrica(&placa_nome);
+        self.carregar_bibliotecas();
+        self.processar_bloco_hardware(&conteudo);
+
+        // 2. Cabeçalho C++ com bibliotecas do Pico SDK
+        let mut cpp_output = String::new();
+        cpp_output.push_str("#include \"pico/stdlib.h\"\n#include \"hardware/flash.h\"\n#include \"hardware/watchdog.h\"\n\n");
+        cpp_output.push_str("int main() {\n\tstdio_init_all();\n");
+
+        // 3. Inicialização Automática de Pins (Reconhecimento de Hardware)
+        // O compilador já sabe quais pins usar e configura-os no setup do C++
+        for (alias, pino_num) in &self.hardware_local {
+            cpp_output.push_str(&format!("\tgpio_init({});\n", pino_num));
+            cpp_output.push_str(&format!("\tgpio_set_dir({}, GPIO_OUT);\n", pino_num));
+        }
+
+        // 4. Processamento de Linhas de Código
+        let mut dentro_bloco_hardware = false;
+
+        for linha in conteudo.lines() {
+            let l = linha.trim();
+            
+            // Ignora o bloco .hardware[] na tradução de comandos (já processado acima)
+            if l.starts_with(".hardware[") { dentro_bloco_hardware = true; continue; }
+            if l == "]" && dentro_bloco_hardware { dentro_bloco_hardware = false; continue; }
+            
+            // Pula linhas de metadados, comentários e definições internas
+            if l.is_empty() || dentro_bloco_hardware || l.starts_with('@') || l.starts_with("import") || l.starts_with("//") {
+                continue;
+            }
+
+            if l.contains("repetir {") {
+                cpp_output.push_str("\twhile(true) {\n");
+            } else if l == "}" {
+                cpp_output.push_str("\t}\n"); 
+            } else {
+                let mut comando_encontrado = false;
+                for (func_tui, snip_c) in &self.biblioteca {
+                    if l.starts_with(func_tui) {
+                        let mut comando_final = snip_c.clone();
+                        
+                        // Substitui argumentos de tempo: esperar(500) -> sleep_ms(500)
+                        if let (Some(start), Some(end)) = (l.find('('), l.find(')')) {
+                            let arg_valor = &l[start + 1..end];
+                            comando_final = comando_final.replace("(ms)", &format!("({})", arg_valor));
                         }
-                    }
+                        
+                        // SUBSTITUIÇÃO DE HARDWARE: Troca o alias pelo número real do pino
+                        // Ex: status_led vira 16 (Waveshare RP2040-Zero)
+                        for (alias, pino_num) in &self.hardware_local {
+                            if l.contains(alias) {
+                                comando_final = comando_final.replace("pino", &pino_num.to_string());
+                            }
+                        }
 
-                    let cmd_limpo = comando_final.trim_end_matches(';').to_string() + ";";
-                    cpp_output.push_str(&format!("\t\t{}\n", cmd_limpo));
-                    break; 
+                        let cmd_limpo = comando_final.trim_end_matches(';').to_string() + ";";
+                        
+                        // Formatação de indentação para o loop
+                        if cpp_output.contains("while(true) {") {
+                            cpp_output.push_str(&format!("\t\t{}\n", cmd_limpo));
+                        } else {
+                            cpp_output.push_str(&format!("\t{}\n", cmd_limpo));
+                        }
+                        
+                        comando_encontrado = true;
+                        break; 
+                    }
+                }
+                
+                if !comando_encontrado {
+                    println!("Aviso: O comando '{}' não foi mapeado ou reconhecido.", l);
                 }
             }
         }
-    }
 
-    cpp_output.push_str("\treturn 0;\n}\n");
+        cpp_output.push_str("\treturn 0;\n}\n");
 
-    if fs::write("temp_output.cpp", &cpp_output).is_ok() {
-        println!("Transpilacao concluida: temp_output.cpp gerado.");
-        self.compilar_para_uf2(drive);
+        // 5. Salva e chama a compilação
+        if fs::write("temp_output.cpp", &cpp_output).is_ok() {
+            println!("Transpilação concluída: temp_output.cpp gerado com sucesso.");
+            self.compilar_para_uf2(drive);
+        }
     }
-}
 }
 
 fn main() {
