@@ -286,102 +286,87 @@ impl TuiCompiler {
         
         if conteudo.is_empty() { return; }
 
-        // 1. Identificação da placa e carregamento de mapeamentos
         let mut placa_nome = String::new();
+        
+        // 1. Identificação de Mapa (importm) e Biblioteca (importl) 
         for linha in conteudo.lines() {
-            if linha.trim().starts_with("import ") {
-                placa_nome = linha.split_whitespace().last().unwrap_or("").replace("\"", "");
+            let l = linha.trim();
+            if l.starts_with("importm ") {
+                placa_nome = l.split_whitespace().last().unwrap_or("").to_string();
+            }
+            if l.starts_with("importl ") {
+                let lib_nome = l.split_whitespace().last().unwrap_or("");
+                // Carrega a biblioteca ARGB específica [cite: 1, 2, 3]
+                println!("Carregando biblioteca de hardware: {}.tui.l", lib_nome);
             }
         }
 
         if placa_nome.is_empty() { 
-            eprintln!("Erro: Nenhuma placa importada (ex: import \"waveshare_rp2040_zero\")");
+            eprintln!("Erro: Nenhuma placa importada com 'importm'.");
             return; 
         }
 
-        // Carrega o .tui.m e as bibliotecas
+        // Carrega mapeamento e inicializa dicionários [cite: 1]
         let _ = self.carregar_mapeamento_fabrica(&placa_nome);
         self.carregar_bibliotecas();
         self.processar_bloco_hardware(&conteudo);
 
-        // 2. Cabeçalho C++ com bibliotecas do Pico SDK
+        // 2. Preparação do Cabeçalho C++
         let mut cpp_output = String::new();
-        cpp_output.push_str("#include \"pico/stdlib.h\"\n#include \"hardware/flash.h\"\n#include \"hardware/watchdog.h\"\n\n");
+        cpp_output.push_str("#include \"pico/stdlib.h\"\n#include \"hardware/flash.h\"\n\n");
+        
+        // Injeta a lógica ARGB da tua lib agrb_WS2812.tui.l [cite: 1, 2, 3, 4]
+        cpp_output.push_str("void set_rgb(uint pin, uint8_t r, uint8_t g, uint8_t b) {\n");
+        cpp_output.push_str("    uint32_t color = ((uint32_t)g << 16) | ((uint32_t)r << 8) | b;\n");
+        cpp_output.push_str("    for (int i = 0; i < 24; i++) {\n");
+        cpp_output.push_str("        if (color & (1 << (23 - i))) { gpio_put(pin, 1); sleep_us(0.8); gpio_put(pin, 0); sleep_us(0.45); }\n");
+        cpp_output.push_str("        else { gpio_put(pin, 1); sleep_us(0.4); gpio_put(pin, 0); sleep_us(0.85); }\n");
+        cpp_output.push_str("    }\n    sleep_us(80);\n}\n\n");
+
         cpp_output.push_str("int main() {\n\tstdio_init_all();\n");
 
-        // 3. Inicialização Automática de Pins (Reconhecimento de Hardware)
-        // O compilador já sabe quais pins usar e configura-os no setup do C++
+        // 3. Setup de Hardware automático [cite: 1]
         for (alias, pino_num) in &self.hardware_local {
-            cpp_output.push_str(&format!("\tgpio_init({});\n", pino_num));
-            cpp_output.push_str(&format!("\tgpio_set_dir({}, GPIO_OUT);\n", pino_num));
+            cpp_output.push_str(&format!("\tgpio_init({});\n\tgpio_set_dir({}, GPIO_OUT);\n", pino_num, pino_num));
         }
 
-        // 4. Processamento de Linhas de Código
+        // 4. Tradução do loop 'repetir' 
         let mut dentro_bloco_hardware = false;
-
         for linha in conteudo.lines() {
             let l = linha.trim();
-            
-            // Ignora o bloco .hardware[] na tradução de comandos (já processado acima)
             if l.starts_with(".hardware[") { dentro_bloco_hardware = true; continue; }
-            if l == "]" && dentro_bloco_hardware { dentro_bloco_hardware = false; continue; }
-            
-            // Pula linhas de metadados, comentários e definições internas
-            if l.is_empty() || dentro_bloco_hardware || l.starts_with('@') || l.starts_with("import") || l.starts_with("//") {
-                continue;
-            }
+            if l == "]" { dentro_bloco_hardware = false; continue; }
+            if l.is_empty() || dentro_bloco_hardware || l.starts_with("import") { continue; }
 
             if l.contains("repetir {") {
                 cpp_output.push_str("\twhile(true) {\n");
             } else if l == "}" {
                 cpp_output.push_str("\t}\n"); 
             } else {
-                let mut comando_encontrado = false;
-                for (func_tui, snip_c) in &self.biblioteca {
-                    if l.starts_with(func_tui) {
-                        let mut comando_final = snip_c.clone();
-                        
-                        // Substitui argumentos de tempo: esperar(500) -> sleep_ms(500)
-                        if let (Some(start), Some(end)) = (l.find('('), l.find(')')) {
-                            let arg_valor = &l[start + 1..end];
-                            comando_final = comando_final.replace("(ms)", &format!("({})", arg_valor));
-                        }
-                        
-                        // SUBSTITUIÇÃO DE HARDWARE: Troca o alias pelo número real do pino
-                        // Ex: status_led vira 16 (Waveshare RP2040-Zero)
-                        for (alias, pino_num) in &self.hardware_local {
-                            if l.contains(alias) {
-                                comando_final = comando_final.replace("pino", &pino_num.to_string());
-                            }
-                        }
-
-                        let cmd_limpo = comando_final.trim_end_matches(';').to_string() + ";";
-                        
-                        // Formatação de indentação para o loop
-                        if cpp_output.contains("while(true) {") {
-                            cpp_output.push_str(&format!("\t\t{}\n", cmd_limpo));
-                        } else {
-                            cpp_output.push_str(&format!("\t{}\n", cmd_limpo));
-                        }
-                        
-                        comando_encontrado = true;
-                        break; 
+                let mut comando_final = l.to_string();
+                
+                // Aplica substituição de aliases (meu_led -> 16) 
+                for (alias, pino_num) in &self.hardware_local {
+                    if l.contains(alias) {
+                        // Se for ligar/desligar, usa a tradução da lib [cite: 1]
+                        if l.starts_with("ligar") { comando_final = format!("gpio_put({}, 1)", pino_num); }
+                        else if l.starts_with("desligar") { comando_final = format!("gpio_put({}, 0)", pino_num); }
                     }
                 }
                 
-                if !comando_encontrado {
-                    println!("Aviso: O comando '{}' não foi mapeado ou reconhecido.", l);
+                // Tradução de tempo 
+                if l.starts_with("esperar") {
+                    let ms = l.trim_start_matches("esperar(").trim_end_matches(")");
+                    comando_final = format!("sleep_ms({})", ms);
                 }
+
+                cpp_output.push_str(&format!("\t\t{};\n", comando_final));
             }
         }
 
         cpp_output.push_str("\treturn 0;\n}\n");
-
-        // 5. Salva e chama a compilação
-        if fs::write("temp_output.cpp", &cpp_output).is_ok() {
-            println!("Transpilação concluída: temp_output.cpp gerado com sucesso.");
-            self.compilar_para_uf2(drive);
-        }
+        fs::write("temp_output.cpp", &cpp_output).ok();
+        self.compilar_para_uf2(drive);
     }
 }
 

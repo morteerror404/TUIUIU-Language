@@ -1,4 +1,5 @@
-import "waveshare_rp2040_zero"
+importm waveshare_rp2040_zero 
+importl agrb_WS2812
 
 .hardware[
     meu_led = @RGB_DATA
