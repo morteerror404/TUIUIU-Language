@@ -1,2 +1,8 @@
-/target
-/build
+// .gitignore
+/target/
+/build/
+/Pico-Setup/
+*.exe
+*.uf2
+temp_output.cpp
+CMakeLists.txt
